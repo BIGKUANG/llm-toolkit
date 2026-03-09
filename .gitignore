@@ -1,0 +1,24 @@
+# 编译产物
+*.log
+*.tmp
+*.out
+*.pyc
+*.pkl
+*.patch
+*.zip
+
+# 目录
+dist/
+build/
+logs/
+data/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+.pytest_cache
