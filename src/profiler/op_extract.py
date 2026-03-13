@@ -43,8 +43,55 @@ import os
 from tqdm import tqdm
 
 
+def format_list_without_comma(val):
+    """Format a list or value without internal commas.
+    
+    Converts list representations to use space as internal separator instead of comma.
+    This ensures that when the final output is comma-separated, each input position
+    can be reliably parsed by splitting on commas.
+    
+    Examples:
+        [1, 2, 3] -> "[1 2 3]"
+        [[1, 2], [3, 4]] -> "[[1 2] [3 4]]"
+        "[1, 2, 3]" (string) -> "[1 2 3]"
+        "0" -> "0"
+        "" -> ""
+    """
+    import re
+    
+    if val is None:
+        return ''
+    
+    if isinstance(val, list):
+        # Recursively format nested lists
+        formatted_items = []
+        for item in val:
+            if isinstance(item, list):
+                formatted_items.append(format_list_without_comma(item))
+            else:
+                formatted_items.append(str(item))
+        return '[' + ' '.join(formatted_items) + ']'
+    
+    # For string values, replace commas inside brackets with spaces
+    val_str = str(val)
+    if '[' in val_str and ']' in val_str:
+        # Replace comma+optional space with space
+        return re.sub(r',\s*', ' ', val_str)
+    
+    return val_str
+
+
 def extract_input_info(event):
     """Extract input shape, stride, and dtype from event args.
+    
+    This function extracts ALL values from 'Concrete Inputs' in order, including:
+    - Tensor shapes (from Input Dims when Concrete Input is empty string)
+    - ScalarList values (e.g., "[5 8 128]" - spaces instead of commas)
+    - Scalar values (e.g., "0", "15", "True", "False")
+    
+    The three output lists (input_shape, input_stride, input_dtype) are aligned:
+    they are output as JSON arrays with the same length.
+    Internal lists use space as separator to avoid conflicts.
     
     Returns:
         dict: Contains 'input_shape', 'input_stride', 'input_dtype', 'has_shape'
@@ -60,34 +107,69 @@ def extract_input_info(event):
         return result
     
     args = event['args']
-    has_any_info = False
     
-    # Extract Input Dims (shape)
-    if 'Input Dims' in args:
-        input_dims = args['Input Dims']
-        non_empty_dims = [str(d) for d in input_dims if d]
-        if non_empty_dims:
-            result['input_shape'] = '|'.join(non_empty_dims)
-            has_any_info = True
+    # Check if Concrete Inputs exists - if so, has_shape is Y
+    if 'Concrete Inputs' not in args:
+        return result
     
-    # Extract Input Strides
-    if 'Input Strides' in args:
-        input_strides = args['Input Strides']
-        non_empty_strides = [str(s) for s in input_strides if s]
-        if non_empty_strides:
-            result['input_stride'] = '|'.join(non_empty_strides)
-            has_any_info = True
+    concrete_inputs = args['Concrete Inputs']
+    if not isinstance(concrete_inputs, list):
+        return result
     
-    # Extract Input type (dtype)
-    if 'Input type' in args:
-        input_types = args['Input type']
-        non_empty_types = [str(t) for t in input_types if t and t != '']
-        if non_empty_types:
-            result['input_dtype'] = '|'.join(non_empty_types)
-            has_any_info = True
+    # Mark has_shape as Y since Concrete Inputs exists
+    result['has_shape'] = 'Y'
     
-    if has_any_info:
-        result['has_shape'] = 'Y'
+    input_dims = args.get('Input Dims', [])
+    input_strides = args.get('Input Strides', [])
+    input_types = args.get('Input type', [])
+    
+    # Ensure all lists have the same length as concrete_inputs
+    num_inputs = len(concrete_inputs)
+    
+    # Pad lists to match length
+    while len(input_dims) < num_inputs:
+        input_dims.append([])
+    while len(input_strides) < num_inputs:
+        input_strides.append([])
+    while len(input_types) < num_inputs:
+        input_types.append('')
+    
+    shape_parts = []
+    stride_parts = []
+    dtype_parts = []
+    
+    for i in range(num_inputs):
+        concrete_val = concrete_inputs[i]
+        dim_val = input_dims[i] if i < len(input_dims) else []
+        stride_val = input_strides[i] if i < len(input_strides) else []
+        type_val = input_types[i] if i < len(input_types) else ''
+        
+        # Determine shape value:
+        # - If concrete_val is empty string "", it's a tensor placeholder -> use Input Dims
+        # - Otherwise use the concrete value directly (ScalarList, Scalar, etc.)
+        if concrete_val == '' and dim_val:
+            # Tensor: use Input Dims as shape (formatted without commas)
+            shape_parts.append(format_list_without_comma(dim_val))
+        else:
+            # Use concrete value directly, formatting lists without commas
+            shape_parts.append(format_list_without_comma(concrete_val))
+        
+        # Determine stride value:
+        # - If stride_val is non-empty list, format it without commas
+        # - Otherwise use empty string
+        if stride_val:
+            stride_parts.append(format_list_without_comma(stride_val))
+        else:
+            stride_parts.append('')
+        
+        # Determine dtype value:
+        # - Use Input type directly (no commas expected in type names)
+        dtype_parts.append(str(type_val) if type_val else '')
+    
+    # Output as JSON arrays for better readability and parsing
+    result['input_shape'] = json.dumps(shape_parts, ensure_ascii=False)
+    result['input_stride'] = json.dumps(stride_parts, ensure_ascii=False)
+    result['input_dtype'] = json.dumps(dtype_parts, ensure_ascii=False)
     
     return result
 
