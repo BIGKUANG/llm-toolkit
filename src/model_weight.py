@@ -1,46 +1,62 @@
 import json
-from safetensors import safe_open
+import os
+import struct
 
+def get_safetensors_metadata(file_path):
+    """直接解析 safetensors 文件的头部，极速获取元数据，不加载实际模型权重"""
+    with open(file_path, 'rb') as f:
+        # 1. 读取前 8 个字节（无符号 64 位小端整数），它表示头部 JSON 的长度
+        length_bytes = f.read(8)
+        if len(length_bytes) != 8:
+            return {}
+        
+        header_size = struct.unpack('<Q', length_bytes)[0]
+        
+        # 2. 根据长度读取头部 JSON 字符串
+        header_json_bytes = f.read(header_size)
+        header_dict = json.loads(header_json_bytes.decode('utf-8'))
+        
+        # safetensors 头部可能包含全局的 '__metadata__'，提取时需将其剔除
+        if '__metadata__' in header_dict:
+            del header_dict['__metadata__']
+            
+        return header_dict
 
-def save_weight_info_to_jsonl(model_dir, output_file="weight_info.jsonl"):
+def save_weight_info_fast(model_dir, output_file="weight_info.jsonl"):
     try:
-        # 1. 解析index.json文件
-        with open(f"{model_dir}/model.safetensors.index.json", "r") as f:
-            index_data = json.load(f)
-            weight_map = index_data["weight_map"]
+        # 找到所有的 safetensors 文件
+        safetensors_files = [f for f in os.listdir(model_dir) if f.endswith(".safetensors")]
         
-        # 2. 按safetensors文件分组key
-        file_to_keys = {}
-        for key, file_name in weight_map.items():
-            if file_name not in file_to_keys:
-                file_to_keys[file_name] = []
-            file_to_keys[file_name].append(key)
-        
-        # 3. 写入JSONL文件
+        if not safetensors_files:
+            print(f"在 {model_dir} 目录下没有找到任何 .safetensors 文件。")
+            return
+            
+        print(f"共找到 {len(safetensors_files)} 个 safetensors 文件，开始极速解析...")
+
         with open(output_file, "w", encoding="utf-8") as out_f:
-            for file_name, keys in file_to_keys.items():
-                file_path = f"{model_dir}/{file_name}"
-                with safe_open(file_path, framework="pt") as f:
-                    available_keys = set(f.keys())
-                    for key in keys:
-                        if key in available_keys:
-                            tensor = f.get_tensor(key)  # 先获取张量
-                            info = {
-                                "key": key,
-                                "shape": list(tensor.shape),  # 从张量获取shape
-                                "dtype": str(tensor.dtype),  # 从张量获取dtype
-                                "source_file": file_name
-                            }
-                            out_f.write(json.dumps(info) + "\n")
-                        else:
-                            print(f"Warning: Key '{key}' not found in {file_name}")
-        
-        print(f"权重信息已成功保存到 {output_file}")
+            for file_name in safetensors_files:
+                file_path = os.path.join(model_dir, file_name)
+                
+                # 瞬间获取文件内所有 tensor 的 shape 和 dtype
+                metadata = get_safetensors_metadata(file_path)
+                
+                for key, details in metadata.items():
+                    info = {
+                        "key": key,
+                        "shape": details.get("shape"),
+                        "dtype": details.get("dtype"),
+                        "source_file": file_name
+                    }
+                    out_f.write(json.dumps(info) + "\n")
+                    
+                print(f"已解析: {file_name} ({len(metadata)} 个张量)")
+                
+        print(f"\n✅ 权重信息已成功保存到 {output_file}")
         
     except Exception as e:
         print(f"发生错误: {str(e)}")
 
 if __name__ == "__main__":
     # 示例用法
-    model_dir = "/datasets/deepseek-r1"  # 替换为你的模型目录
-    save_weight_info_to_jsonl(model_dir)
+    model_dir = "/login_home/ckpts/deepseek/DeepSeek-V4-Pro-hygon"  # 替换为你的模型目录
+    save_weight_info_fast(model_dir)
